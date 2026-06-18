@@ -9,18 +9,26 @@ import (
 	"strings"
 )
 
-type ProcessStatus struct {
-	Name    string `json:"name"`
-	Running bool   `json:"running"`
-	PID     string `json:"pid,omitempty"`
+type ProcessInfo struct {
+	Name string `json:"name"`
+	PID  string `json:"pid"`
 }
 
-func processExists(name string) (bool, string) {
+type ProcessStatus struct {
+	Keyword string        `json:"keyword"`
+	Running bool          `json:"running"`
+	Count   int           `json:"count"`
+	Matches []ProcessInfo `json:"matches,omitempty"`
+}
+
+func findProcesses(keyword string) []ProcessInfo {
+	var matches []ProcessInfo
+
 	if runtime.GOOS == "windows" {
-		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", name), "/FO", "CSV", "/NH")
+		cmd := exec.Command("tasklist", "/FO", "CSV", "/NH")
 		output, err := cmd.Output()
 		if err != nil {
-			return false, ""
+			return matches
 		}
 		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 		for _, line := range lines {
@@ -31,19 +39,42 @@ func processExists(name string) (bool, string) {
 			parts := strings.Split(line, ",")
 			if len(parts) >= 2 {
 				imgName := strings.Trim(parts[0], "\"")
-				if strings.EqualFold(imgName, name) {
-					return true, strings.Trim(parts[1], "\"")
+				if strings.Contains(strings.ToLower(imgName), strings.ToLower(keyword)) {
+					matches = append(matches, ProcessInfo{
+						Name: imgName,
+						PID:  strings.Trim(parts[1], "\""),
+					})
 				}
 			}
 		}
-		return false, ""
+		return matches
 	}
-	cmd := exec.Command("pgrep", "-x", name)
-	err := cmd.Run()
+
+	cmd := exec.Command("pgrep", "-fl", keyword)
+	output, err := cmd.Output()
 	if err != nil {
-		return false, ""
+		return matches
 	}
-	return true, ""
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) >= 1 {
+			pid := parts[0]
+			name := ""
+			if len(parts) >= 2 {
+				name = parts[1]
+			}
+			matches = append(matches, ProcessInfo{
+				Name: name,
+				PID:  pid,
+			})
+		}
+	}
+	return matches
 }
 
 func processHandler(w http.ResponseWriter, r *http.Request) {
@@ -52,17 +83,18 @@ func processHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := r.URL.Query().Get("name")
-	if name == "" {
+	keyword := r.URL.Query().Get("name")
+	if keyword == "" {
 		http.Error(w, "missing query parameter: name", http.StatusBadRequest)
 		return
 	}
 
-	running, pid := processExists(name)
+	matches := findProcesses(keyword)
 	status := ProcessStatus{
-		Name:    name,
-		Running: running,
-		PID:     pid,
+		Keyword: keyword,
+		Running: len(matches) > 0,
+		Count:   len(matches),
+		Matches: matches,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
